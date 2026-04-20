@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ancient Lantern Flock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #060606;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      cursor: crosshair;
+    }
+    .hint {
+      position: fixed;
+      left: 14px;
+      bottom: 12px;
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 12px;
+      letter-spacing: 0.25px;
+      user-select: none;
+      pointer-events: none;
+      text-shadow: 0 0 10px rgba(0, 0, 0, 0.45);
+      background: rgba(12, 12, 12, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      padding: 7px 10px;
+      backdrop-filter: blur(2px);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div class="hint">Click empty: spawn | Click LANDED: rise | Double-click: launch all LANDED (2x) + ripple</div>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("scene");
+      const ctx = canvas.getContext("2d");
+
+      const LANTERN_STATE = {
+        LANDED: "LANDED",
+        RISING: "RISING",
+        FLOATING: "FLOATING"
+      };
+
+      const PALETTE = ["#87adc7", "#e7d77c", "#bf541d", "#90a484", "#d5809e"];
+      const MAX_FLOATING = 40;
+      const BG_SRC = "/mnt/agents/upload/2.png";
+      const lanterns = [];
+      const particles = [];
+      const ripples = [];
+
+      const bgImage = new Image();
+      bgImage.src = BG_SRC;
+
+      let width = 0;
+      let height = 0;
+      let dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      let time = 0;
+      let lastTs = performance.now();
+
+      function clamp(v, min, max) {
+        return Math.max(min, Math.min(max, v));
+      }
+
+      function rand(min, max) {
+        return min + Math.random() * (max - min);
+      }
+
+      function hexToRgba(hex, alpha = 1) {
+        const h = hex.replace("#", "");
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
+
+      function pickColor() {
+        return PALETTE[(Math.random() * PALETTE.length) | 0];
+      }
+
+      function resize() {
+        width = Math.floor(window.innerWidth);
+        height = Math.floor(window.innerHeight);
+        dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+
+      function createLantern(x, y, state = LANTERN_STATE.LANDED) {
+        const depth = state === LANTERN_STATE.FLOATING ? rand(0.3, 1) : rand(0.65, 1);
+        const size = rand(16, 32) * (0.65 + depth * 0.65);
+        const baseY = state === LANTERN_STATE.FLOATING ? y : clamp(y, height * 0.25, height * 0.92);
+        return {
+          x,
+          y: baseY,
+          baseY,
+          state,
+          depth,
+          bodyColor: pickColor(),
+          glowColor: pickColor(),
+          tasselColor: pickColor(),
+          frameColor: pickColor(),
+          alpha: state === LANTERN_STATE.FLOATING ? rand(0.35, 0.9) : 1,
+          scale: 1,
+          vx: rand(-10, 10) * depth,
+          vy: 0,
+          riseSpeed: rand(36, 66),
+          driftAmpX: rand(8, 28) * (0.5 + depth),
+          driftAmpY: rand(2, 12) * (0.2 + depth),
+          driftFreq: rand(0.22, 0.65),
+          phase: rand(0, Math.PI * 2),
+          glowBase: rand(8, 16) + size * 0.8,
+          glowAmp: rand(4, 14),
+          breatheFreq: rand(1.1, 2.1),
+          bodyW: size * rand(0.72, 0.9),
+          bodyH: size * rand(1.2, 1.55),
+          flame: rand(2.8, 5.4),
+          clickableRadius: size * 0.82
+        };
+      }
+
+      function spawnParticle(x, y, color, speedMul = 1) {
+        const angle = rand(0, Math.PI * 2);
+        const speed = rand(12, 48) * speedMul;
+        particles.push({
+          x,
+          y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - rand(4, 24),
+          life: rand(0.45, 1.1),
+          age: 0,
+          size: rand(1, 3.4),
+          color
+        });
+      }
+
+      function spawnBurst(lantern, count = 22) {
+        for (let i = 0; i < count; i++) {
+          spawnParticle(lantern.x, lantern.y + lantern.bodyH * 0.2, pickColor(), rand(0.6, 1.4));
+        }
+      }
+
+      function spawnRipple(x, y, color) {
+        ripples.push({
+          x,
+          y,
+          radius: 0,
+          maxRadius: rand(90, 190),
+          age: 0,
+          life: rand(0.85, 1.35),
+          color
+        });
+      }
+
+      function launchLantern(lantern, speedMul = 1) {
+        if (lantern.state !== LANTERN_STATE.LANDED) {
+          return;
+        }
+        lantern.state = LANTERN_STATE.RISING;
+        lantern.vy = -rand(18, 32) * speedMul;
+        spawnBurst(lantern, 26);
+      }
+
+      function drawBackground() {
+        if (bgImage.complete && bgImage.naturalWidth > 0) {
+          const imgW = bgImage.naturalWidth;
+          const imgH = bgImage.naturalHeight;
+          const scale = Math.max(width / imgW, height / imgH);
+          const drawW = imgW * scale;
+          const drawH = imgH * scale;
+          const dx = (width - drawW) * 0.5;
+          const dy = (height - drawH) * 0.5;
+          ctx.drawImage(bgImage, dx, dy, drawW, drawH);
+        } else {
+          ctx.fillStyle = "#101010";
+          ctx.fillRect(0, 0, width, height);
+        }
+
+        const shade = ctx.createLinearGradient(0, 0, 0, height);
+        shade.addColorStop(0, "rgba(0,0,0,0.22)");
+        shade.addColorStop(0.6, "rgba(0,0,0,0.34)");
+        shade.addColorStop(1, "rgba(0,0,0,0.46)");
+        ctx.fillStyle = shade;
+        ctx.fillRect(0, 0, width, height);
+      }
+
+      function drawLantern(l) {
+        const pulse = Math.sin(time * l.breatheFreq + l.phase) * 0.5 + 0.5;
+        const glow = l.glowBase + l.glowAmp * pulse;
+        const w = l.bodyW * l.scale;
+        const h = l.bodyH * l.scale;
+
+        ctx.save();
+        ctx.translate(l.x, l.y);
+        ctx.globalAlpha = l.alpha;
+
+        const outerGlow = ctx.createRadialGradient(0, 0, 0, 0, 0, glow * (0.6 + l.depth * 0.8));
+        outerGlow.addColorStop(0, hexToRgba(l.glowColor, 0.14 + pulse * 0.16));
+        outerGlow.addColorStop(0.5, hexToRgba(l.bodyColor, 0.08 + pulse * 0.08));
+        outerGlow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = outerGlow;
+        ctx.beginPath();
+        ctx.arc(0, 0, glow * (0.8 + l.depth * 0.6), 0, Math.PI * 2);
+        ctx.fill();
+
+        const bodyGrad = ctx.createLinearGradient(0, -h * 0.72, 0, h * 0.82);
+        bodyGrad.addColorStop(0, hexToRgba(l.bodyColor, 0.98));
+        bodyGrad.addColorStop(0.52, hexToRgba(l.glowColor, 0.92));
+        bodyGrad.addColorStop(1, hexToRgba(l.frameColor, 0.95));
+        ctx.fillStyle = bodyGrad;
+
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.56, -h * 0.56);
+        ctx.quadraticCurveTo(-w * 0.77, -h * 0.04, -w * 0.43, h * 0.63);
+        ctx.quadraticCurveTo(0, h * 0.83, w * 0.43, h * 0.63);
+        ctx.quadraticCurveTo(w * 0.77, -h * 0.04, w * 0.56, -h * 0.56);
+        ctx.quadraticCurveTo(0, -h * 0.91, -w * 0.56, -h * 0.56);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = hexToRgba(l.frameColor, 0.72);
+        ctx.lineWidth = Math.max(1, w * 0.05);
+        for (let i = -1; i <= 1; i++) {
+          const x = i * w * 0.26;
+          ctx.beginPath();
+          ctx.moveTo(x, -h * 0.58);
+          ctx.quadraticCurveTo(x * 0.86, 0, x, h * 0.68);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = hexToRgba(l.glowColor, 0.55 + pulse * 0.24);
+        ctx.beginPath();
+        ctx.ellipse(0, -h * 0.24, w * 0.35, h * 0.1, Math.sin(l.phase) * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = hexToRgba(l.frameColor, 0.7);
+        ctx.lineWidth = Math.max(1, w * 0.03);
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.25, h * 0.58);
+        ctx.lineTo(w * 0.25, h * 0.58);
+        ctx.stroke();
+
+        ctx.strokeStyle = hexToRgba(l.frameColor, 0.66);
+        ctx.lineWidth = Math.max(1, w * 0.02);
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.18, h * 0.58);
+        ctx.quadraticCurveTo(-w * 0.16, h * 0.76, -w * 0.22, h * 0.95);
+        ctx.moveTo(0, h * 0.58);
+        ctx.quadraticCurveTo(0, h * 0.77, 0, h * 1.02);
+        ctx.moveTo(w * 0.18, h * 0.58);
+        ctx.quadraticCurveTo(w * 0.16, h * 0.76, w * 0.22, h * 0.95);
+        ctx.stroke();
+
+        ctx.fillStyle = hexToRgba(l.tasselColor, 0.9);
+        ctx.beginPath();
+        ctx.ellipse(-w * 0.22, h * 0.97, w * 0.048, h * 0.075, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, h * 1.03, w * 0.05, h * 0.08, 0, 0, Math.PI * 2);
+        ctx.ellipse(w * 0.22, h * 0.97, w * 0.048, h * 0.075, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        const flameGrad = ctx.createRadialGradient(0, h * 0.62, 0, 0, h * 0.62, l.flame * l.scale * 2.2);
+        flameGrad.addColorStop(0, hexToRgba(l.glowColor, 0.96));
+        flameGrad.addColorStop(0.45, hexToRgba(l.bodyColor, 0.86));
+        flameGrad.addColorStop(1, hexToRgba(l.bodyColor, 0));
+        ctx.fillStyle = flameGrad;
+        ctx.beginPath();
+        ctx.ellipse(0, h * 0.62, l.flame * l.scale, l.flame * l.scale * 1.7, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+
+      function updateLantern(l, dt) {
+        if (l.state === LANTERN_STATE.LANDED) {
+          l.y = l.baseY + Math.sin(time * l.driftFreq + l.phase) * (0.8 + l.depth * 1.2);
+          return;
+        }
+
+        if (l.state === LANTERN_STATE.RISING) {
+          l.vy -= l.riseSpeed * dt;
+          l.vy = Math.max(l.vy, -96 - l.depth * 45);
+          l.y += l.vy * dt;
+          l.x += Math.sin(time * (l.driftFreq + 0.32) + l.phase) * (8 + l.depth * 8) * dt;
+
+          l.scale = Math.max(0.2, l.scale - dt * (0.14 + (1 - l.depth) * 0.08));
+          l.alpha = Math.max(0.24, l.alpha - dt * 0.13);
+
+          if (Math.random() < 0.78) {
+            spawnParticle(l.x + rand(-4, 4), l.y + l.bodyH * 0.44, l.tasselColor, 0.45);
+          }
+
+          if (l.y < height * (0.16 + (1 - l.depth) * 0.08)) {
+            l.state = LANTERN_STATE.FLOATING;
+            l.baseY = l.y;
+            l.alpha = clamp(l.alpha + 0.1, 0.26, 0.9);
+            l.vx = rand(-11, 11) * l.depth;
+            l.vy = rand(-4, 2);
+          }
+          return;
+        }
+
+        if (l.state === LANTERN_STATE.FLOATING) {
+          l.baseY += l.vy * dt;
+          l.x += l.vx * dt;
+          l.x += Math.sin(time * l.driftFreq + l.phase) * l.driftAmpX * dt;
+          l.y = l.baseY + Math.sin(time * (l.driftFreq * 0.8) + l.phase) * l.driftAmpY;
+
+          if (l.x < -80) {
+            l.x = width + 80;
+          } else if (l.x > width + 80) {
+            l.x = -80;
+          }
+
+          if (l.baseY < -70) {
+            l.baseY = height + rand(12, 140);
+          }
+          if (l.baseY > height + 100) {
+            l.baseY = -rand(50, 180);
+          }
+        }
+      }
+
+      function updateParticles(dt) {
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.age += dt;
+          if (p.age >= p.life) {
+            particles.splice(i, 1);
+            continue;
+          }
+          const drag = Math.exp(-dt * 3.2);
+          p.vx *= drag;
+          p.vy *= drag;
+          p.vy -= dt * 12;
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+        }
+      }
+
+      function drawParticles() {
+        for (const p of particles) {
+          const t = p.age / p.life;
+          const alpha = (1 - t) * 0.9;
+          const radius = p.size * (0.5 + (1 - t));
+          const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 2.6);
+          g.addColorStop(0, hexToRgba(p.color, alpha));
+          g.addColorStop(1, hexToRgba(p.color, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, radius * 2.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      function updateRipples(dt) {
+        for (let i = ripples.length - 1; i >= 0; i--) {
+          const r = ripples[i];
+          r.age += dt;
+          r.radius += dt * 230;
+          if (r.age >= r.life || r.radius > r.maxRadius) {
+            ripples.splice(i, 1);
+          }
+        }
+      }
+
+      function drawRipples() {
+        for (const r of ripples) {
+          const t = r.age / r.life;
+          const alpha = (1 - t) * 0.56;
+          ctx.strokeStyle = hexToRgba(r.color, alpha);
+          ctx.lineWidth = 1.2 + (1 - t) * 1.8;
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, r.radius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      function countFloating() {
+        let n = 0;
+        for (const l of lanterns) {
+          if (l.state === LANTERN_STATE.FLOATING) {
+            n++;
+          }
+        }
+        return n;
+      }
+
+      function enforceFloatingCap() {
+        let floating = countFloating();
+        if (floating <= MAX_FLOATING) {
+          return;
+        }
+        for (let i = 0; i < lanterns.length && floating > MAX_FLOATING; i++) {
+          if (lanterns[i].state === LANTERN_STATE.FLOATING) {
+            lanterns.splice(i, 1);
+            i--;
+            floating--;
+          }
+        }
+      }
+
+      function handleClick(e) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        for (let i = lanterns.length - 1; i >= 0; i--) {
+          const l = lanterns[i];
+          if (l.state !== LANTERN_STATE.LANDED) {
+            continue;
+          }
+          const dx = mx - l.x;
+          const dy = my - l.y;
+          const r = l.clickableRadius * 1.2;
+          if (dx * dx + dy * dy <= r * r) {
+            launchLantern(l, 1);
+            return;
+          }
+        }
+
+        lanterns.push(createLantern(mx, my, LANTERN_STATE.LANDED));
+      }
+
+      function handleDoubleClick(e) {
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        spawnRipple(mx, my, pickColor());
+        spawnRipple(mx, my, pickColor());
+
+        for (const l of lanterns) {
+          if (l.state === LANTERN_STATE.LANDED) {
+            launchLantern(l, 2);
+          }
+        }
+      }
+
+      function seedFloatingLanterns() {
+        const initial = 16;
+        for (let i = 0; i < initial; i++) {
+          const x = rand(0, width);
+          const y = rand(0, height * 0.75);
+          const l = createLantern(x, y, LANTERN_STATE.FLOATING);
+          l.scale = rand(0.32, 0.82);
+          l.alpha = rand(0.24, 0.72);
+          l.vy = rand(-4, 2);
+          l.baseY = y;
+          lanterns.push(l);
+        }
+      }
+
+      function sortByDepth() {
+        lanterns.sort((a, b) => a.depth - b.depth);
+      }
+
+      function frame(ts) {
+        const dt = Math.min(0.035, (ts - lastTs) / 1000);
+        lastTs = ts;
+        time += dt;
+
+        drawBackground();
+
+        for (const l of lanterns) {
+          updateLantern(l, dt);
+        }
+        updateParticles(dt);
+        updateRipples(dt);
+
+        enforceFloatingCap();
+        sortByDepth();
+
+        for (const l of lanterns) {
+          drawLantern(l);
+        }
+        drawParticles();
+        drawRipples();
+
+        requestAnimationFrame(frame);
+      }
+
+      window.addEventListener("resize", resize);
+      canvas.addEventListener("click", handleClick);
+      canvas.addEventListener("dblclick", handleDoubleClick);
+
+      resize();
+      seedFloatingLanterns();
+      requestAnimationFrame(frame);
+    })();
+  </script>
+</body>
+</html>
