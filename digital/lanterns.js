@@ -9,6 +9,19 @@ const CONFIG = {
 };
 
 let scene;
+let bgImage;
+
+function preload() {
+  // Fail-safe: ensure preload completes even if the image can't be loaded
+  // (e.g. when running from file:// without a local server).
+  bgImage = loadImage(
+    "assets/2.jpg",
+    () => {},
+    () => {
+      bgImage = null;
+    }
+  );
+}
 
 function setup() {
   const cnv = createCanvas(windowWidth, windowHeight);
@@ -42,7 +55,7 @@ class Scene {
   }
 
   draw() {
-    drawBackground(this.time);
+    drawBackground(this.time, this.camera.offsetX);
     this.system.draw(this.time);
   }
 }
@@ -257,35 +270,45 @@ class Lantern {
   }
 }
 
-function drawBackground(time) {
+function drawBackground(time, cameraOffsetX = 0) {
   background("#0a0a10");
   const ctx = drawingContext;
-  const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, "rgba(14, 14, 24, 0.95)");
-  sky.addColorStop(0.55, "rgba(13, 10, 16, 0.97)");
-  sky.addColorStop(1, "rgba(6, 5, 8, 1)");
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, width, height);
 
-  noStroke();
-  for (let i = 0; i < 26; i++) {
-    const twinkle = 0.2 + sin(time * 0.7 + i * 0.93) * 0.18;
-    fill(`rgba(255,230,180,${0.06 + twinkle * 0.08})`);
-    const x = ((i * 183.7) % width + sin(time * 0.09 + i) * 24 + width) % width;
-    const y = ((i * 97.3) % (height * 0.72)) + 8;
-    circle(x, y, 1.2 + (i % 3));
+  // 360 pan-friendly background: tile the image horizontally and scroll with camera offset.
+  if (bgImage && bgImage.width > 1) {
+    const scale = height / bgImage.height;
+    const drawW = bgImage.width * scale;
+    const drawH = height;
+
+    const parallax = 0.18;
+    const scroll = cameraOffsetX * parallax;
+    const startX = -(((scroll % drawW) + drawW) % drawW);
+
+    noSmooth();
+    for (let x = startX - drawW; x < width + drawW; x += drawW) {
+      image(bgImage, x, 0, drawW, drawH);
+    }
+    smooth();
   }
+
+  // Subtle darken + vignette so lantern glow reads clearly.
+  const shade = ctx.createLinearGradient(0, 0, 0, height);
+  shade.addColorStop(0, "rgba(0,0,0,0.22)");
+  shade.addColorStop(0.6, "rgba(0,0,0,0.18)");
+  shade.addColorStop(1, "rgba(0,0,0,0.32)");
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, 0, width, height);
 
   const vignette = ctx.createRadialGradient(
     width * 0.5,
-    height * 0.45,
-    min(width, height) * 0.14,
+    height * 0.48,
+    min(width, height) * 0.18,
     width * 0.5,
-    height * 0.5,
-    max(width, height) * 0.7
+    height * 0.52,
+    max(width, height) * 0.78
   );
   vignette.addColorStop(0, "rgba(0,0,0,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.34)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.42)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, width, height);
 }
