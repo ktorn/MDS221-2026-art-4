@@ -191,11 +191,14 @@ class Lantern {
     bodyGrad.addColorStop(1, hexToRgba(this.frameColor, 0.95));
     ctx.fillStyle = bodyGrad;
     ctx.beginPath();
-    ctx.moveTo(-w * 0.56, -h * 0.56);
-    ctx.quadraticCurveTo(-w * 0.77, -h * 0.04, -w * 0.43, h * 0.63);
-    ctx.quadraticCurveTo(0, h * 0.83, w * 0.43, h * 0.63);
-    ctx.quadraticCurveTo(w * 0.77, -h * 0.04, w * 0.56, -h * 0.56);
-    ctx.quadraticCurveTo(0, -h * 0.91, -w * 0.56, -h * 0.56);
+    // Make top ~2x wider than bottom.
+    const topHalf = w * 0.86;
+    const bottomHalf = w * 0.36;
+    ctx.moveTo(-topHalf, -h * 0.56);
+    ctx.quadraticCurveTo(-w * 1.06, -h * 0.04, -bottomHalf, h * 0.63);
+    ctx.quadraticCurveTo(0, h * 0.83, bottomHalf, h * 0.63);
+    ctx.quadraticCurveTo(w * 1.06, -h * 0.04, topHalf, -h * 0.56);
+    ctx.quadraticCurveTo(0, -h * 0.91, -topHalf, -h * 0.56);
     ctx.closePath();
     ctx.fill();
 
@@ -203,7 +206,7 @@ class Lantern {
     strokeWeight(max(1, w * 0.05));
     noFill();
     for (let i = -1; i <= 1; i++) {
-      const x = i * w * 0.26;
+      const x = i * topHalf * 0.42;
       beginShape();
       vertex(x, -h * 0.58);
       quadraticVertex(x * 0.86, 0, x, h * 0.68);
@@ -212,11 +215,11 @@ class Lantern {
 
     noStroke();
     fill(hexToRgba(this.glowColor, 0.55 + pulse * 0.24));
-    ellipse(0, -h * 0.24, w * 0.7, h * 0.2);
+    ellipse(0, -h * 0.24, topHalf * 1.25, h * 0.2);
 
     stroke(hexToRgba(this.frameColor, 0.7));
     strokeWeight(max(1, w * 0.03));
-    line(-w * 0.25, h * 0.58, w * 0.25, h * 0.58);
+    line(-bottomHalf * 0.65, h * 0.58, bottomHalf * 0.65, h * 0.58);
 
     stroke(hexToRgba(this.frameColor, 0.66));
     strokeWeight(max(1, w * 0.02));
