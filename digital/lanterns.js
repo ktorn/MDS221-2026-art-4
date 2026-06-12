@@ -9,7 +9,8 @@ const CONFIG = {
   cameraDamping: 5.4,
   backgroundParallax: 0.18,
   simpleLanternDepthBelow: 0.42,
-  panSmoothing: 11
+  panSmoothing: 11,
+  spritePulseFrames: 6
 };
 
 const TARGET_FPS = 60;
@@ -524,6 +525,51 @@ class Lantern {
     Object.assign(this, props);
     this.baseX = props.x;
     this.baseY = props.y;
+    this.sprites = [];
+    this.spriteW = 0;
+    this.spriteH = 0;
+  }
+
+  usesSimpleSprite() {
+    return this.depth < CONFIG.simpleLanternDepthBelow;
+  }
+
+  getSpriteBounds() {
+    const w = this.bodyW * this.scale;
+    const h = this.bodyH * this.scale;
+    const maxGlow = this.glowBase + this.glowAmp;
+    const glowRadius = this.usesSimpleSprite()
+      ? maxGlow * 1.1
+      : maxGlow * (0.8 + this.depth * 0.6);
+    const pad = 14;
+    return {
+      halfW: max(w * 1.15, glowRadius) + pad,
+      halfH: max(h * 1.15, glowRadius) + pad,
+    };
+  }
+
+  buildSpriteCache() {
+    const bounds = this.getSpriteBounds();
+    this.spriteW = ceil(bounds.halfW * 2);
+    this.spriteH = ceil(bounds.halfH * 2);
+    const frames = CONFIG.spritePulseFrames;
+    this.sprites = [];
+
+    for (let i = 0; i < frames; i++) {
+      const pulse = frames === 1 ? 0.5 : i / (frames - 1);
+      const sprite = createGraphics(this.spriteW, this.spriteH);
+      sprite.pixelDensity(1);
+      sprite.clear();
+      sprite.push();
+      sprite.translate(this.spriteW / 2, this.spriteH / 2);
+      if (this.usesSimpleSprite()) {
+        this.paintSimple(sprite, pulse);
+      } else {
+        this.paintDetailed(sprite, pulse);
+      }
+      sprite.pop();
+      this.sprites.push(sprite);
+    }
   }
 
   update(dt, time) {
@@ -546,9 +592,6 @@ class Lantern {
 
   draw(time, cameraOffsetX) {
     const pulse = sin(time * this.breatheFreq + this.phase) * 0.5 + 0.5;
-    const glow = this.glowBase + this.glowAmp * pulse;
-    const w = this.bodyW * this.scale;
-    const h = this.bodyH * this.scale;
     const parallax = lerp(0.22, 1.3, this.depth);
     const drawXRaw = this.baseX + cameraOffsetX * parallax;
     const drawX = wrapValue(drawXRaw, -220, width + 220);
@@ -558,15 +601,26 @@ class Lantern {
       return;
     }
 
-    if (this.depth < CONFIG.simpleLanternDepthBelow) {
-      this.drawSimple(pulse, glow, w, h, drawX, drawY);
-      return;
+    if (!this.sprites.length) {
+      this.buildSpriteCache();
     }
+    if (!this.sprites.length) return;
 
-    const ctx = drawingContext;
+    const frameIndex = min(
+      floor(pulse * (this.sprites.length - 1)),
+      this.sprites.length - 1
+    );
 
-    push();
-    translate(drawX, drawY);
+    imageMode(CENTER);
+    image(this.sprites[frameIndex], drawX, drawY);
+    imageMode(CORNER);
+  }
+
+  paintDetailed(g, pulse) {
+    const glow = this.glowBase + this.glowAmp * pulse;
+    const w = this.bodyW * this.scale;
+    const h = this.bodyH * this.scale;
+    const ctx = g.drawingContext;
 
     ctx.save();
     ctx.globalAlpha = this.alpha;
@@ -576,8 +630,8 @@ class Lantern {
     outerGlow.addColorStop(0.5, hexToRgba(this.bodyColor, 0.08 + pulse * 0.08));
     outerGlow.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = outerGlow;
-    noStroke();
-    circle(0, 0, glow * (0.8 + this.depth * 0.6) * 2);
+    g.noStroke();
+    g.circle(0, 0, glow * (0.8 + this.depth * 0.6) * 2);
 
     const bodyGrad = ctx.createLinearGradient(0, -h * 0.72, 0, h * 0.82);
     bodyGrad.addColorStop(0, hexToRgba(this.bodyColor, 0.98));
@@ -585,7 +639,6 @@ class Lantern {
     bodyGrad.addColorStop(1, hexToRgba(this.frameColor, 0.95));
     ctx.fillStyle = bodyGrad;
     ctx.beginPath();
-    // Make top ~2x wider than bottom.
     const topHalf = w * 0.86;
     const bottomHalf = w * 0.36;
     ctx.moveTo(-topHalf, -h * 0.56);
@@ -596,46 +649,46 @@ class Lantern {
     ctx.closePath();
     ctx.fill();
 
-    stroke(hexToRgba(this.frameColor, 0.72));
-    strokeWeight(max(1, w * 0.05));
-    noFill();
+    g.stroke(hexToRgba(this.frameColor, 0.72));
+    g.strokeWeight(max(1, w * 0.05));
+    g.noFill();
     for (let i = -1; i <= 1; i++) {
       const x = i * topHalf * 0.42;
-      beginShape();
-      vertex(x, -h * 0.58);
-      quadraticVertex(x * 0.86, 0, x, h * 0.68);
-      endShape();
+      g.beginShape();
+      g.vertex(x, -h * 0.58);
+      g.quadraticVertex(x * 0.86, 0, x, h * 0.68);
+      g.endShape();
     }
 
-    noStroke();
-    fill(hexToRgba(this.glowColor, 0.55 + pulse * 0.24));
-    ellipse(0, -h * 0.24, topHalf * 1.25, h * 0.2);
+    g.noStroke();
+    g.fill(hexToRgba(this.glowColor, 0.55 + pulse * 0.24));
+    g.ellipse(0, -h * 0.24, topHalf * 1.25, h * 0.2);
 
-    stroke(hexToRgba(this.frameColor, 0.7));
-    strokeWeight(max(1, w * 0.03));
-    line(-bottomHalf * 0.65, h * 0.58, bottomHalf * 0.65, h * 0.58);
+    g.stroke(hexToRgba(this.frameColor, 0.7));
+    g.strokeWeight(max(1, w * 0.03));
+    g.line(-bottomHalf * 0.65, h * 0.58, bottomHalf * 0.65, h * 0.58);
 
-    stroke(hexToRgba(this.frameColor, 0.66));
-    strokeWeight(max(1, w * 0.02));
-    noFill();
-    beginShape();
-    vertex(-w * 0.18, h * 0.58);
-    quadraticVertex(-w * 0.16, h * 0.76, -w * 0.22, h * 0.95);
-    endShape();
-    beginShape();
-    vertex(0, h * 0.58);
-    quadraticVertex(0, h * 0.77, 0, h * 1.02);
-    endShape();
-    beginShape();
-    vertex(w * 0.18, h * 0.58);
-    quadraticVertex(w * 0.16, h * 0.76, w * 0.22, h * 0.95);
-    endShape();
+    g.stroke(hexToRgba(this.frameColor, 0.66));
+    g.strokeWeight(max(1, w * 0.02));
+    g.noFill();
+    g.beginShape();
+    g.vertex(-w * 0.18, h * 0.58);
+    g.quadraticVertex(-w * 0.16, h * 0.76, -w * 0.22, h * 0.95);
+    g.endShape();
+    g.beginShape();
+    g.vertex(0, h * 0.58);
+    g.quadraticVertex(0, h * 0.77, 0, h * 1.02);
+    g.endShape();
+    g.beginShape();
+    g.vertex(w * 0.18, h * 0.58);
+    g.quadraticVertex(w * 0.16, h * 0.76, w * 0.22, h * 0.95);
+    g.endShape();
 
-    noStroke();
-    fill(hexToRgba(this.tasselColor, 0.9));
-    ellipse(-w * 0.22, h * 0.97, w * 0.096, h * 0.15);
-    ellipse(0, h * 1.03, w * 0.1, h * 0.16);
-    ellipse(w * 0.22, h * 0.97, w * 0.096, h * 0.15);
+    g.noStroke();
+    g.fill(hexToRgba(this.tasselColor, 0.9));
+    g.ellipse(-w * 0.22, h * 0.97, w * 0.096, h * 0.15);
+    g.ellipse(0, h * 1.03, w * 0.1, h * 0.16);
+    g.ellipse(w * 0.22, h * 0.97, w * 0.096, h * 0.15);
 
     const flameGrad = ctx.createRadialGradient(0, h * 0.62, 0, 0, h * 0.62, this.flame * this.scale * 2.2);
     flameGrad.addColorStop(0, hexToRgba(this.glowColor, 0.96));
@@ -647,13 +700,14 @@ class Lantern {
     ctx.fill();
 
     ctx.restore();
-    pop();
   }
 
-  drawSimple(pulse, glow, w, h, drawX, drawY) {
-    const ctx = drawingContext;
-    push();
-    translate(drawX, drawY);
+  paintSimple(g, pulse) {
+    const glow = this.glowBase + this.glowAmp * pulse;
+    const w = this.bodyW * this.scale;
+    const h = this.bodyH * this.scale;
+    const ctx = g.drawingContext;
+
     ctx.save();
     ctx.globalAlpha = this.alpha;
 
@@ -661,16 +715,15 @@ class Lantern {
     outerGlow.addColorStop(0, hexToRgba(this.glowColor, 0.16 + pulse * 0.12));
     outerGlow.addColorStop(1, "rgba(0,0,0,0)");
     ctx.fillStyle = outerGlow;
-    noStroke();
-    circle(0, 0, glow * 1.8);
+    g.noStroke();
+    g.circle(0, 0, glow * 1.8);
 
-    fill(hexToRgba(this.bodyColor, 0.9));
-    ellipse(0, 0, w * 0.82, h * 0.95);
-    fill(hexToRgba(this.glowColor, 0.75 + pulse * 0.15));
-    ellipse(0, h * 0.58, w * 0.22, h * 0.12);
+    g.fill(hexToRgba(this.bodyColor, 0.9));
+    g.ellipse(0, 0, w * 0.82, h * 0.95);
+    g.fill(hexToRgba(this.glowColor, 0.75 + pulse * 0.15));
+    g.ellipse(0, h * 0.58, w * 0.22, h * 0.12);
 
     ctx.restore();
-    pop();
   }
 }
 
