@@ -1,1 +1,5 @@
 agent/
+.DS_Store
+node_modules/
+digital/secrets.js
+tangible/**/secrets.h

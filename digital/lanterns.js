@@ -1,44 +1,399 @@
 const PALETTE = ["#87adc7", "#e7d77c", "#bf541d", "#90a484", "#d5809e"];
 
 const CONFIG = {
-  maxLanterns: 65,
-  spawnIntervalMin: 0.24,
-  spawnIntervalMax: 0.62,
+  maxLanterns: 50,
+  minDynamicMaxLanterns: 10,
+  spawnIntervalMin: 0.28,
+  spawnIntervalMax: 0.72,
   cameraAccel: 860,
-  cameraDamping: 5.4
+  cameraDamping: 5.4,
+  backgroundParallax: 0.18,
+  simpleLanternDepthBelow: 0.42,
+  panSmoothing: 11
 };
 
+const TARGET_FPS = 60;
+
+const APP_SECRETS = window.APP_SECRETS || {};
+const REGISTRY_BASE_URL =
+  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.ktorn.workers.dev";
+const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-4";
+const PAN_STALE_MS = 500;
+const PAN_DISCONNECT_MS = 1200;
+const FPS_SAMPLE_MS = 500;
+
+let fpsDisplay = 0;
+let fpsFrameCount = 0;
+let fpsWindowStartMs = 0;
+let spawnScale = 1;
+
+function readUrlConfig() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    deviceId: params.get("deviceId") || DEFAULT_DEVICE_ID,
+    token: params.get("token") || APP_SECRETS.registryToken || null,
+    registry: params.get("registry") || REGISTRY_BASE_URL,
+    ws: params.get("ws"),
+    wsHost: params.get("wsHost"),
+    wsPort: params.get("wsPort") || "81",
+  };
+}
+
+function hasDirectWs(config) {
+  return !!(config.ws || config.wsHost);
+}
+
+function needsRegistryLookup(config) {
+  return !hasDirectWs(config) && !!(config.deviceId && config.token);
+}
+
+async function lookupDeviceEndpoint(config) {
+  const base = config.registry.replace(/\/$/, "");
+  const url = new URL(`${base}/lookup`);
+  url.searchParams.set("device_id", config.deviceId);
+  url.searchParams.set("token", config.token);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw new Error(`lookup ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.lan_ip) throw new Error("no lan_ip");
+  const port = data.ws_port || 81;
+  return `ws://${data.lan_ip}:${port}`;
+}
+
+class PanWebSocket {
+  constructor(url) {
+    this.url = url;
+    this.socket = null;
+    this.latest = null;
+    this.lastRawHeading = null;
+    this.unwrappedHeading = null;
+    this.lastReceivedMs = 0;
+    this.errorState = null;
+    this.wantConnection = false;
+    this.reconnectTimer = null;
+    this.lastDisplayedState = "";
+  }
+
+  ingestHeading(rawHeading) {
+    const heading = clampValue(rawHeading, 0, 359.99);
+    this.latest = heading;
+
+    if (this.lastRawHeading === null || this.unwrappedHeading === null) {
+      this.lastRawHeading = heading;
+      this.unwrappedHeading = heading;
+      return;
+    }
+
+    let delta = heading - this.lastRawHeading;
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+
+    this.unwrappedHeading += delta;
+    this.lastRawHeading = heading;
+  }
+
+  setUrl(url) {
+    const wasConnected = this.wantConnection;
+    this.disconnect();
+    this.url = url;
+    if (wasConnected) this.connect();
+  }
+
+  connect() {
+    this.wantConnection = true;
+    this.openSocket();
+  }
+
+  openSocket() {
+    if (this.socket && this.socket.readyState <= 1) return;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    this.socket = new WebSocket(this.url);
+    this.errorState = null;
+    this.lastReceivedMs = 0;
+    this.latest = null;
+    this.lastRawHeading = null;
+    this.unwrappedHeading = null;
+    this.notifyStateChange();
+
+    this.socket.onopen = () => {
+      this.notifyStateChange();
+    };
+    this.socket.onclose = () => {
+      this.socket = null;
+      this.notifyStateChange();
+      if (this.wantConnection) {
+        this.reconnectTimer = setTimeout(() => this.openSocket(), 2000);
+      }
+    };
+    this.socket.onerror = () => {
+      this.errorState = "error";
+      this.notifyStateChange();
+    };
+
+    // ESP32 heading stream: {"heading": 123.45, "source": "esp32", "ts": 1760000000000}
+    this.socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (typeof payload.heading !== "number") return;
+        this.errorState = null;
+        this.lastReceivedMs = Date.now();
+        this.ingestHeading(payload.heading);
+        this.notifyStateChange();
+      } catch (err) {
+        this.errorState = "bad_data";
+        this.notifyStateChange();
+      }
+    };
+  }
+
+  disconnect() {
+    this.wantConnection = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+    }
+    this.latest = null;
+    this.lastRawHeading = null;
+    this.unwrappedHeading = null;
+    this.lastReceivedMs = 0;
+    this.errorState = null;
+    this.lastDisplayedState = "";
+    this.notifyStateChange();
+  }
+
+  isStale() {
+    if (this.lastReceivedMs === 0) return true;
+    return Date.now() - this.lastReceivedMs > PAN_STALE_MS;
+  }
+
+  getDataAgeMs() {
+    if (this.lastReceivedMs === 0) return null;
+    return Date.now() - this.lastReceivedMs;
+  }
+
+  getHeading() {
+    if (this.isStale() || typeof this.latest !== "number") return null;
+    return this.latest;
+  }
+
+  getUnwrappedHeading() {
+    if (this.isStale() || typeof this.unwrappedHeading !== "number") return null;
+    return this.unwrappedHeading;
+  }
+
+  getState() {
+    if (!this.wantConnection) return "disconnected";
+    if (this.errorState) return this.errorState;
+    if (!this.socket) {
+      return this.reconnectTimer ? "reconnecting" : "disconnected";
+    }
+
+    const readyState = this.socket.readyState;
+    if (readyState === WebSocket.CONNECTING) return "connecting";
+    if (readyState === WebSocket.CLOSING) return "closing";
+    if (readyState === WebSocket.CLOSED) return "disconnected";
+    if (this.lastReceivedMs === 0) return "waiting";
+    if (this.isStale()) return "stale";
+    return "connected";
+  }
+
+  tick() {
+    if (!this.wantConnection) return;
+
+    const ageMs = this.getDataAgeMs();
+    if (
+      this.socket &&
+      this.socket.readyState === WebSocket.OPEN &&
+      ageMs !== null &&
+      ageMs > PAN_DISCONNECT_MS
+    ) {
+      this.socket.close();
+      return;
+    }
+
+    this.notifyStateChange();
+  }
+
+  notifyStateChange() {
+    const next = this.getState();
+    if (next === this.lastDisplayedState) return;
+    this.lastDisplayedState = next;
+    updateHint(true);
+  }
+}
+
+const URL_CONFIG = readUrlConfig();
+let WS_URL = hasDirectWs(URL_CONFIG)
+  ? URL_CONFIG.ws || `ws://${URL_CONFIG.wsHost}:${URL_CONFIG.wsPort}`
+  : needsRegistryLookup(URL_CONFIG)
+    ? "resolving…"
+    : "ws://localhost:8080";
+let registryState = needsRegistryLookup(URL_CONFIG)
+  ? "resolving"
+  : hasDirectWs(URL_CONFIG)
+    ? "bypassed"
+    : "no token";
+
+let panSource = "websocket";
+let panInput;
+let hintEl;
 let scene;
 let bgImage;
+let bgTileLayer;
+let bgOverlayLayer;
+const rgbaCache = new Map();
 
 function preload() {
   // Fail-safe: ensure preload completes even if the image can't be loaded
   // (e.g. when running from file:// without a local server).
   bgImage = loadImage(
     "assets/2.jpg",
-    () => {},
+    () => {
+      prepareBackgroundLayers();
+    },
     () => {
       bgImage = null;
+      bgTileLayer = null;
+      bgOverlayLayer = null;
     }
   );
 }
 
 function setup() {
+  panInput = new PanWebSocket(WS_URL);
   const cnv = createCanvas(windowWidth, windowHeight);
   cnv.id("scene");
-  pixelDensity(clampValue(window.devicePixelRatio || 1, 1, 2));
+  pixelDensity(1);
+  prepareBackgroundLayers();
   scene = new Scene();
+  hintEl = document.querySelector(".hint");
+  updateHint(true);
+
+  if (needsRegistryLookup(URL_CONFIG)) {
+    lookupDeviceEndpoint(URL_CONFIG)
+      .then((url) => {
+        WS_URL = url;
+        panInput.setUrl(url);
+        registryState = "ok";
+        if (panSource === "websocket") {
+          panInput.connect();
+        }
+        updateHint(true);
+      })
+      .catch((err) => {
+        registryState = err.message || "failed";
+        updateHint(true);
+      });
+  } else if (hasDirectWs(URL_CONFIG)) {
+    registryState = "bypassed";
+    panInput.connect();
+    updateHint(true);
+  } else if (panSource === "websocket") {
+    panInput.connect();
+    updateHint(true);
+  }
 }
 
 function draw() {
+  updateFps();
+  updateSpawnScale();
   const dt = min(0.033, deltaTime / 1000);
+  if (panSource === "websocket" && panInput) {
+    panInput.tick();
+  }
   scene.update(dt);
   scene.draw();
+  if (frameCount % 4 === 0) {
+    updateHint();
+  }
+}
+
+function updateFps() {
+  const now = millis();
+  if (fpsWindowStartMs === 0) {
+    fpsWindowStartMs = now;
+    return;
+  }
+
+  fpsFrameCount++;
+  const elapsed = now - fpsWindowStartMs;
+  if (elapsed < FPS_SAMPLE_MS) return;
+
+  fpsDisplay = (fpsFrameCount * 1000) / elapsed;
+  fpsFrameCount = 0;
+  fpsWindowStartMs = now;
+}
+
+function updateSpawnScale() {
+  if (fpsDisplay <= 0) return;
+
+  const target = clampValue(fpsDisplay / TARGET_FPS, 0.2, 1);
+  const rate = target < spawnScale ? 0.22 : 0.07;
+  spawnScale = lerp(spawnScale, target, rate);
+}
+
+function getDynamicSpawnLimits() {
+  const scale = max(0.2, spawnScale);
+  return {
+    maxLanterns: max(
+      CONFIG.minDynamicMaxLanterns,
+      floor(CONFIG.maxLanterns * scale)
+    ),
+    intervalMin: CONFIG.spawnIntervalMin / scale,
+    intervalMax: CONFIG.spawnIntervalMax / scale,
+  };
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
-  pixelDensity(clampValue(window.devicePixelRatio || 1, 1, 2));
+  pixelDensity(1);
+  prepareBackgroundLayers();
+}
+
+function keyPressed() {
+  if (key === "w" || key === "W") {
+    togglePanSource();
+  } else if (key === "f" || key === "F") {
+    fullscreen(!fullscreen());
+  }
+}
+
+function togglePanSource() {
+  panSource = panSource === "simulation" ? "websocket" : "simulation";
+  if (panSource === "websocket") {
+    panInput.connect();
+  } else {
+    panInput.disconnect();
+  }
+  updateHint(true);
+}
+
+function updateHint(force = false) {
+  if (!hintEl || !panInput) return;
+  if (!force && frameCount % 4 !== 0) return;
+  const wsState = panSource === "websocket" ? panInput.getState() : "idle";
+  const dataAge = panSource === "websocket" ? panInput.getDataAgeMs() : null;
+  const heading = panSource === "websocket" ? panInput.getHeading() : null;
+  const dataLabel =
+    dataAge === null ? "no data yet" : `${(dataAge / 1000).toFixed(1)}s ago`;
+  const headingLabel =
+    heading === null ? "--" : `${heading.toFixed(2)}°`;
+  const fpsLabel = fpsDisplay > 0 ? fpsDisplay.toFixed(1) : "--";
+  const spawnCap = getDynamicSpawnLimits().maxLanterns;
+  hintEl.textContent =
+    `FPS: ${fpsLabel} | Spawn cap: ${spawnCap} | Source: ${panSource} | WS: ${wsState} | Heading: ${headingLabel} | Data: ${dataLabel} | Endpoint: ${WS_URL} | Registry: ${registryState} | W: source | F: fullscreen`;
 }
 
 class Scene {
@@ -50,7 +405,8 @@ class Scene {
 
   update(dt) {
     this.time += dt;
-    this.camera.update(dt);
+    const headingDeg = panSource === "websocket" ? panInput.getUnwrappedHeading() : null;
+    this.camera.update(dt, headingDeg);
     this.system.update(dt, this.time);
   }
 
@@ -66,12 +422,22 @@ class CameraRig {
     this.velocityX = 0;
   }
 
-  update(dt) {
+  update(dt, headingDeg = null) {
+    if (panSource === "websocket" && headingDeg !== null) {
+      const tileW = getBackgroundTileWidth();
+      const travel = tileW / CONFIG.backgroundParallax;
+      const targetOffsetX = (headingDeg / 360) * travel;
+      const smooth = 1 - exp(-CONFIG.panSmoothing * dt);
+      this.offsetX = lerp(this.offsetX, targetOffsetX, smooth);
+      this.velocityX = 0;
+      return;
+    }
+
     const leftPressed = keyIsDown(LEFT_ARROW);
     const rightPressed = keyIsDown(RIGHT_ARROW);
-    const input = (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
+    const keyboardInput = (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
 
-    this.velocityX += input * CONFIG.cameraAccel * dt;
+    this.velocityX += keyboardInput * CONFIG.cameraAccel * dt;
     const damping = exp(-CONFIG.cameraDamping * dt);
     this.velocityX *= damping;
     this.offsetX += this.velocityX * dt;
@@ -85,18 +451,20 @@ class LanternSystem {
     this.spawnTimer = 0;
     this.nextSpawnIn = randRange(CONFIG.spawnIntervalMin, CONFIG.spawnIntervalMax);
 
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 14; i++) {
       const depth = pow(random(), 1.7);
       this.lanterns.push(Lantern.create(depth, random(-40, width + 40), random(height * 0.05, height * 1.08)));
     }
   }
 
   update(dt, time) {
+    const spawnLimits = getDynamicSpawnLimits();
+
     this.spawnTimer += dt;
     while (this.spawnTimer >= this.nextSpawnIn) {
       this.spawnTimer -= this.nextSpawnIn;
-      this.nextSpawnIn = randRange(CONFIG.spawnIntervalMin, CONFIG.spawnIntervalMax);
-      if (this.lanterns.length < CONFIG.maxLanterns) {
+      this.nextSpawnIn = randRange(spawnLimits.intervalMin, spawnLimits.intervalMax);
+      if (this.lanterns.length < spawnLimits.maxLanterns) {
         const depth = pow(random(), 1.8);
         const spawnX = random(-90, width + 90);
         const spawnY = height + random(20, 120);
@@ -112,12 +480,15 @@ class LanternSystem {
       }
     }
 
-    this.lanterns.sort((a, b) => a.depth - b.depth);
+    if (frameCount % 3 === 0) {
+      this.lanterns.sort((a, b) => a.depth - b.depth);
+    }
   }
 
   draw(time) {
+    const cameraOffsetX = this.camera.offsetX;
     for (const lantern of this.lanterns) {
-      lantern.draw(time, this.camera.offsetX);
+      lantern.draw(time, cameraOffsetX);
     }
   }
 }
@@ -182,6 +553,16 @@ class Lantern {
     const drawXRaw = this.baseX + cameraOffsetX * parallax;
     const drawX = wrapValue(drawXRaw, -220, width + 220);
     const drawY = this.y;
+
+    if (drawX < -300 || drawX > width + 300 || drawY < -280 || drawY > height + 180) {
+      return;
+    }
+
+    if (this.depth < CONFIG.simpleLanternDepthBelow) {
+      this.drawSimple(pulse, glow, w, h, drawX, drawY);
+      return;
+    }
+
     const ctx = drawingContext;
 
     push();
@@ -268,30 +649,48 @@ class Lantern {
     ctx.restore();
     pop();
   }
+
+  drawSimple(pulse, glow, w, h, drawX, drawY) {
+    const ctx = drawingContext;
+    push();
+    translate(drawX, drawY);
+    ctx.save();
+    ctx.globalAlpha = this.alpha;
+
+    const outerGlow = ctx.createRadialGradient(0, 0, 0, 0, 0, glow * 1.1);
+    outerGlow.addColorStop(0, hexToRgba(this.glowColor, 0.16 + pulse * 0.12));
+    outerGlow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = outerGlow;
+    noStroke();
+    circle(0, 0, glow * 1.8);
+
+    fill(hexToRgba(this.bodyColor, 0.9));
+    ellipse(0, 0, w * 0.82, h * 0.95);
+    fill(hexToRgba(this.glowColor, 0.75 + pulse * 0.15));
+    ellipse(0, h * 0.58, w * 0.22, h * 0.12);
+
+    ctx.restore();
+    pop();
+  }
 }
 
-function drawBackground(time, cameraOffsetX = 0) {
-  background("#0a0a10");
-  const ctx = drawingContext;
-
-  // 360 pan-friendly background: tile the image horizontally and scroll with camera offset.
-  if (bgImage && bgImage.width > 1) {
-    const scale = height / bgImage.height;
-    const drawW = bgImage.width * scale;
-    const drawH = height;
-
-    const parallax = 0.18;
-    const scroll = cameraOffsetX * parallax;
-    const startX = -(((scroll % drawW) + drawW) % drawW);
-
-    noSmooth();
-    for (let x = startX - drawW; x < width + drawW; x += drawW) {
-      image(bgImage, x, 0, drawW, drawH);
-    }
-    smooth();
+function prepareBackgroundLayers() {
+  if (!bgImage || bgImage.width <= 1 || width < 1 || height < 1) {
+    bgTileLayer = null;
+    bgOverlayLayer = null;
+    return;
   }
 
-  // Subtle darken + vignette so lantern glow reads clearly.
+  const drawW = Math.ceil(bgImage.width * (height / bgImage.height));
+  bgTileLayer = createGraphics(drawW, height);
+  bgTileLayer.pixelDensity(1);
+  bgTileLayer.noSmooth();
+  bgTileLayer.image(bgImage, 0, 0, drawW, height);
+
+  bgOverlayLayer = createGraphics(width, height);
+  bgOverlayLayer.pixelDensity(1);
+  const ctx = bgOverlayLayer.drawingContext;
+
   const shade = ctx.createLinearGradient(0, 0, 0, height);
   shade.addColorStop(0, "rgba(0,0,0,0.22)");
   shade.addColorStop(0.6, "rgba(0,0,0,0.18)");
@@ -313,6 +712,32 @@ function drawBackground(time, cameraOffsetX = 0) {
   ctx.fillRect(0, 0, width, height);
 }
 
+function drawBackground(time, cameraOffsetX = 0) {
+  background("#0a0a10");
+
+  if (bgTileLayer) {
+    const drawW = bgTileLayer.width;
+    const scroll = -cameraOffsetX * CONFIG.backgroundParallax;
+    const startX = -(((scroll % drawW) + drawW) % drawW);
+
+    noSmooth();
+    for (let x = startX - drawW; x < width + drawW; x += drawW) {
+      image(bgTileLayer, x, 0);
+    }
+    smooth();
+  }
+
+  if (bgOverlayLayer) {
+    image(bgOverlayLayer, 0, 0);
+  }
+}
+
+function getBackgroundTileWidth() {
+  if (bgTileLayer) return bgTileLayer.width;
+  if (!bgImage || bgImage.width <= 1) return width;
+  return bgImage.width * (height / bgImage.height);
+}
+
 function randRange(minValue, maxValue) {
   return minValue + random() * (maxValue - minValue);
 }
@@ -330,9 +755,14 @@ function wrapValue(value, minValue, maxValue) {
 }
 
 function hexToRgba(hex, alpha = 1) {
+  const key = `${hex}|${alpha}`;
+  if (rgbaCache.has(key)) return rgbaCache.get(key);
+
   const clean = hex.replace("#", "");
   const r = parseInt(clean.slice(0, 2), 16);
   const g = parseInt(clean.slice(2, 4), 16);
   const b = parseInt(clean.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  const value = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  rgbaCache.set(key, value);
+  return value;
 }
