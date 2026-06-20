@@ -10,6 +10,13 @@ set "PORT=8000"
 set "URL=http://localhost:%PORT%"
 set "CHROME=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
 
+REM Screen 1 (actual kiosk display) is left of the primary virtual screen.
+REM Portrait resolution: 1080 x 1920.
+set "KIOSK_X=-1080"
+set "KIOSK_Y=0"
+set "KIOSK_W=1080"
+set "KIOSK_H=1920"
+
 if not exist "%CHROME%" (
   set "CHROME=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
 )
@@ -28,6 +35,8 @@ taskkill /F /IM chrome.exe >nul 2>nul
 
 start "MDS Kiosk" "%CHROME%" ^
   --kiosk "%URL%" ^
+  --window-position=%KIOSK_X%,%KIOSK_Y% ^
+  --window-size=%KIOSK_W%,%KIOSK_H% ^
   --user-data-dir="%PROJECT%kiosk-chrome-profile" ^
   --no-first-run ^
   --disable-session-crashed-bubble ^
