@@ -22,6 +22,8 @@ const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-4";
 const PAN_STALE_MS = 500;
 const PAN_DISCONNECT_MS = 1200;
 const FPS_SAMPLE_MS = 500;
+const BACKGROUND_IMAGE_URL = "assets/2.jpg";
+const BACKGROUND_RETRY_MS = 2000;
 
 let fpsDisplay = 0;
 let fpsFrameCount = 0;
@@ -250,26 +252,17 @@ let registryState = needsRegistryLookup(URL_CONFIG)
 let panSource = "websocket";
 let panInput;
 let hintEl;
+let debugVisible = true;
 let scene;
 let bgImage;
 let bgTileLayer;
 let bgOverlayLayer;
+let bgLoadState = "idle";
+let bgLastLoadAttemptMs = 0;
 const rgbaCache = new Map();
 
 function preload() {
-  // Fail-safe: ensure preload completes even if the image can't be loaded
-  // (e.g. when running from file:// without a local server).
-  bgImage = loadImage(
-    "assets/2.jpg",
-    () => {
-      prepareBackgroundLayers();
-    },
-    () => {
-      bgImage = null;
-      bgTileLayer = null;
-      bgOverlayLayer = null;
-    }
-  );
+  requestBackgroundImage();
 }
 
 function setup() {
@@ -308,6 +301,7 @@ function setup() {
 }
 
 function draw() {
+  ensureBackgroundReady();
   updateFps();
   updateSpawnScale();
   const dt = min(0.033, deltaTime / 1000);
@@ -368,7 +362,17 @@ function keyPressed() {
     togglePanSource();
   } else if (key === "f" || key === "F") {
     fullscreen(!fullscreen());
+  } else if (key === "d" || key === "D") {
+    toggleDebugPane();
   }
+}
+
+function toggleDebugPane() {
+  debugVisible = !debugVisible;
+  if (hintEl) {
+    hintEl.style.display = debugVisible ? "block" : "none";
+  }
+  updateHint(true);
 }
 
 function togglePanSource() {
@@ -383,6 +387,7 @@ function togglePanSource() {
 
 function updateHint(force = false) {
   if (!hintEl || !panInput) return;
+  if (!debugVisible) return;
   if (!force && frameCount % 4 !== 0) return;
   const wsState = panSource === "websocket" ? panInput.getState() : "idle";
   const dataAge = panSource === "websocket" ? panInput.getDataAgeMs() : null;
@@ -393,8 +398,9 @@ function updateHint(force = false) {
     heading === null ? "--" : `${heading.toFixed(2)}°`;
   const fpsLabel = fpsDisplay > 0 ? fpsDisplay.toFixed(1) : "--";
   const spawnCap = getDynamicSpawnLimits().maxLanterns;
+  const bgLabel = bgTileLayer ? "ready" : bgLoadState;
   hintEl.textContent =
-    `FPS: ${fpsLabel} | Spawn cap: ${spawnCap} | Source: ${panSource} | WS: ${wsState} | Heading: ${headingLabel} | Data: ${dataLabel} | Endpoint: ${WS_URL} | Registry: ${registryState} | W: source | F: fullscreen`;
+    `FPS: ${fpsLabel} | Spawn cap: ${spawnCap} | BG: ${bgLabel} | Source: ${panSource} | WS: ${wsState} | Heading: ${headingLabel} | Data: ${dataLabel} | Endpoint: ${WS_URL} | Registry: ${registryState} | W: source | F: fullscreen | D: debug`;
 }
 
 class Scene {
@@ -477,7 +483,12 @@ class LanternSystem {
       const lantern = this.lanterns[i];
       lantern.update(dt, time);
       if (lantern.isOutOfView()) {
-        this.lanterns.splice(i, 1);
+        if (this.lanterns.length > spawnLimits.maxLanterns) {
+          lantern.dispose();
+          this.lanterns.splice(i, 1);
+        } else {
+          lantern.respawn();
+        }
       }
     }
 
@@ -525,6 +536,24 @@ class Lantern {
     Object.assign(this, props);
     this.baseX = props.x;
     this.baseY = props.y;
+    this.sprites = [];
+    this.spriteW = 0;
+    this.spriteH = 0;
+  }
+
+  respawn() {
+    this.baseX = random(-90, width + 90);
+    this.baseY = height + random(20, 120);
+    this.y = this.baseY;
+    this.phase = random(TWO_PI);
+  }
+
+  dispose() {
+    for (const sprite of this.sprites) {
+      if (sprite && typeof sprite.remove === "function") {
+        sprite.remove();
+      }
+    }
     this.sprites = [];
     this.spriteW = 0;
     this.spriteH = 0;
@@ -727,12 +756,54 @@ class Lantern {
   }
 }
 
-function prepareBackgroundLayers() {
-  if (!bgImage || bgImage.width <= 1 || width < 1 || height < 1) {
-    bgTileLayer = null;
-    bgOverlayLayer = null;
+function requestBackgroundImage() {
+  if (bgLoadState === "loading") return;
+
+  bgLoadState = "loading";
+  bgLastLoadAttemptMs = Date.now();
+
+  bgImage = loadImage(
+    BACKGROUND_IMAGE_URL,
+    (loadedImage) => {
+      bgImage = loadedImage;
+      bgLoadState = "loaded";
+      prepareBackgroundLayers();
+      updateHint(true);
+    },
+    () => {
+      bgImage = null;
+      bgTileLayer = null;
+      bgOverlayLayer = null;
+      bgLoadState = "failed";
+      updateHint(true);
+    }
+  );
+}
+
+function ensureBackgroundReady() {
+  if (bgTileLayer && bgOverlayLayer) return;
+
+  if (bgImage && bgImage.width > 1 && width > 0 && height > 0) {
+    prepareBackgroundLayers();
     return;
   }
+
+  if (
+    bgLoadState !== "loading" &&
+    Date.now() - bgLastLoadAttemptMs > BACKGROUND_RETRY_MS
+  ) {
+    bgLoadState = "retrying";
+    requestBackgroundImage();
+  }
+}
+
+function prepareBackgroundLayers() {
+  if (!bgImage || bgImage.width <= 1 || width < 1 || height < 1) {
+    disposeBackgroundLayers();
+    return;
+  }
+
+  disposeBackgroundLayers();
 
   const drawW = Math.ceil(bgImage.width * (height / bgImage.height));
   bgTileLayer = createGraphics(drawW, height);
@@ -763,6 +834,19 @@ function prepareBackgroundLayers() {
   vignette.addColorStop(1, "rgba(0,0,0,0.42)");
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, width, height);
+
+  bgLoadState = "ready";
+}
+
+function disposeBackgroundLayers() {
+  if (bgTileLayer && typeof bgTileLayer.remove === "function") {
+    bgTileLayer.remove();
+  }
+  if (bgOverlayLayer && typeof bgOverlayLayer.remove === "function") {
+    bgOverlayLayer.remove();
+  }
+  bgTileLayer = null;
+  bgOverlayLayer = null;
 }
 
 function drawBackground(time, cameraOffsetX = 0) {
