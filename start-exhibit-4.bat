@@ -32,9 +32,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 REM Restart Chrome to clear long-running browser/canvas/GPU state.
 taskkill /F /IM chrome.exe >nul 2>nul
+timeout /t 2 /nobreak >nul
 
 start "MDS Kiosk" "%CHROME%" ^
   --kiosk "%URL%" ^
+  --new-window ^
   --window-position=%KIOSK_X%,%KIOSK_Y% ^
   --window-size=%KIOSK_W%,%KIOSK_H% ^
   --user-data-dir="%PROJECT%kiosk-chrome-profile" ^
