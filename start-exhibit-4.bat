@@ -28,7 +28,7 @@ if not exist "%CHROME%" (
 
 REM Start Python server only if the port is not already listening.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$port=%PORT%; $digital='%DIGITAL_DIR%'; $listening=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; if (-not $listening) { Start-Process cmd.exe -ArgumentList '/c start "" /min python -m http.server %PORT%' -WorkingDirectory $digital -WindowStyle Minimized }"
+  "$port=%PORT%; $digital='%DIGITAL_DIR%'; $listening=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; if (-not $listening) { if (Get-Command py -ErrorAction SilentlyContinue) { Start-Process py -ArgumentList '-3','-m','http.server','%PORT%' -WorkingDirectory $digital -WindowStyle Minimized } else { Start-Process python -ArgumentList '-m','http.server','%PORT%' -WorkingDirectory $digital -WindowStyle Minimized } }"
 
 REM Restart Chrome to clear long-running browser/canvas/GPU state.
 taskkill /F /IM chrome.exe >nul 2>nul
