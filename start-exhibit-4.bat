@@ -15,7 +15,7 @@ if not exist "%CHROME%" (
 )
 
 if not exist "%CHROME%" (
-  echo Chrome not found. Update CHROME in start-kiosk.bat.
+  echo Chrome not found. Update CHROME in start-exhibit-4.bat.
   exit /b 1
 )
 
