@@ -17,7 +17,7 @@ const TARGET_FPS = 60;
 
 const APP_SECRETS = window.APP_SECRETS || {};
 const REGISTRY_BASE_URL =
-  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.ktorn.workers.dev";
+  APP_SECRETS.registryBaseUrl || "https://esp-device-registry.xxx.workers.dev";
 const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-4";
 const PAN_STALE_MS = 500;
 const PAN_DISCONNECT_MS = 1200;

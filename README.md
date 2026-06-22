@@ -52,7 +52,7 @@ Mock server listens on `ws://localhost:8080`. Press `W` in the browser to use We
 
 ### ESP32 LAN IP lookup (registry)
 
-Same pattern as [MDS221-2026-art-3](https://github.com/ktorn/MDS221-2026-art-3):
+Same pattern as MDS221-2026-art-3:
 
 1. Copy `digital/secrets.example.js` to `digital/secrets.js` (use the same `registryToken` and `deviceId` as `tangible/esp32-pan-2026/secrets.h`).
 2. `digital/index.html` loads `secrets.js` before the sketch; on startup the page calls the cloud registry `/lookup` endpoint and resolves `ws://<lan_ip>:81`.
@@ -65,7 +65,7 @@ Overrides:
 
 ## Tangible / ESP32
 
-Firmware lives in `tangible/esp32-pan-2026/`, following the [MDS221-2026-art-template](https://github.com/ktorn/MDS221-2026-art-template) layout.
+Firmware lives in `tangible/esp32-pan-2026/`, following the MDS221-2026-art-template layout.
 
 | File | Purpose |
 |------|---------|
