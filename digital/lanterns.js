@@ -335,9 +335,12 @@ function updateFps() {
 function updateSpawnScale() {
   if (fpsDisplay <= 0) return;
 
-  const target = fpsDisplay >= SPAWN_THROTTLE_FPS
-    ? 1
-    : clampValue(fpsDisplay / SPAWN_THROTTLE_FPS, 0.2, 1);
+  if (fpsDisplay >= SPAWN_THROTTLE_FPS) {
+    spawnScale = 1;
+    return;
+  }
+
+  const target = clampValue(fpsDisplay / SPAWN_THROTTLE_FPS, 0.2, 1);
   const rate = target < spawnScale ? 0.22 : 0.07;
   spawnScale = lerp(spawnScale, target, rate);
 }
