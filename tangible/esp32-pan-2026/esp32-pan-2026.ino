@@ -32,7 +32,7 @@
 // Do not use GPIO19/20 as UART — they are USB D-/D+ and will break the USB port.
 
 #ifndef WIFI_TX_POWER
-#define WIFI_TX_POWER WIFI_POWER_19_5dBm
+#define WIFI_TX_POWER WIFI_POWER_8_5dBm
 #endif
 
 #ifndef WIFI_COUNTRY_CC
@@ -44,8 +44,7 @@
 #endif
 
 static const unsigned long REGISTER_INTERVAL_MS = 5UL * 60UL * 1000UL;
-static const unsigned long PAN_SEND_INTERVAL_MS = 150;
-static const unsigned long WIFI_FAST_RECONNECT_TIMEOUT_MS = 8000;
+static const unsigned long PAN_SEND_INTERVAL_MS = 100;
 static unsigned long gLastRegistryPostMs = 0;
 
 WebSocketsServer webSocket(81);
@@ -152,27 +151,6 @@ static bool connectWifi() {
   return true;
 }
 
-static bool reconnectWifiFast() {
-  Serial.println("[WiFi] lost connection, trying fast reconnect...");
-  WiFi.reconnect();
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - start < WIFI_FAST_RECONNECT_TIMEOUT_MS) {
-    webSocket.loop();
-    delay(100);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[WiFi] fast reconnect OK, IP: ");
-    Serial.println(WiFi.localIP());
-    return true;
-  }
-
-  Serial.println("[WiFi] fast reconnect failed");
-  return false;
-}
-
 static String jsonQuoted(const char* raw) {
   String out = "\"";
   if (!raw) raw = "";
@@ -223,9 +201,7 @@ static void registerWithCloud() {
 }
 
 static void broadcastHeading(float heading) {
-  String msg = String("{\"heading\":") + String(heading, 2) +
-               ",\"rssi\":" + WiFi.RSSI() +
-               ",\"source\":\"esp32\",\"ts\":" + millis() + "}";
+  String msg = String("{\"heading\":") + String(heading, 2) + ",\"source\":\"esp32\",\"ts\":" + millis() + "}";
   webSocket.broadcastTXT(msg);
 }
 
@@ -257,7 +233,8 @@ void loop() {
   webSocket.loop();
 
   if (WiFi.status() != WL_CONNECTED) {
-    if (reconnectWifiFast() || connectWifi()) {
+    Serial.println("[WiFi] lost connection, reconnecting...");
+    if (connectWifi()) {
       registerWithCloud();
       gLastRegistryPostMs = millis();
     }

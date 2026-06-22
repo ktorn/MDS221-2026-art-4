@@ -18,7 +18,6 @@ wss.on("connection", (socket) => {
     socket.send(
       JSON.stringify({
         heading,
-        rssi: -55 + Math.round(Math.sin(tick * 0.11) * 8),
         source: "mock-server",
         ts: Date.now(),
       }),

@@ -20,8 +20,8 @@ const APP_SECRETS = window.APP_SECRETS || {};
 const REGISTRY_BASE_URL =
   APP_SECRETS.registryBaseUrl || "https://esp-device-registry.xxx.workers.dev";
 const DEFAULT_DEVICE_ID = APP_SECRETS.deviceId || "MDS221-2026-4";
-const PAN_STALE_MS = 1000;
-const PAN_DISCONNECT_MS = 3000;
+const PAN_STALE_MS = 500;
+const PAN_DISCONNECT_MS = 1200;
 const FPS_SAMPLE_MS = 500;
 const BACKGROUND_IMAGE_URL = "assets/2.jpg";
 const BACKGROUND_RETRY_MS = 2000;
@@ -74,7 +74,6 @@ class PanWebSocket {
     this.latest = null;
     this.lastRawHeading = null;
     this.unwrappedHeading = null;
-    this.rssi = null;
     this.lastReceivedMs = 0;
     this.errorState = null;
     this.wantConnection = false;
@@ -126,7 +125,6 @@ class PanWebSocket {
     this.latest = null;
     this.lastRawHeading = null;
     this.unwrappedHeading = null;
-    this.rssi = null;
     this.notifyStateChange();
 
     this.socket.onopen = () => {
@@ -152,7 +150,6 @@ class PanWebSocket {
         this.errorState = null;
         this.lastReceivedMs = Date.now();
         this.ingestHeading(payload.heading);
-        this.rssi = typeof payload.rssi === "number" ? payload.rssi : null;
         this.notifyStateChange();
       } catch (err) {
         this.errorState = "bad_data";
@@ -174,7 +171,6 @@ class PanWebSocket {
     this.latest = null;
     this.lastRawHeading = null;
     this.unwrappedHeading = null;
-    this.rssi = null;
     this.lastReceivedMs = 0;
     this.errorState = null;
     this.lastDisplayedState = "";
@@ -194,11 +190,6 @@ class PanWebSocket {
   getHeading() {
     if (this.isStale() || typeof this.latest !== "number") return null;
     return this.latest;
-  }
-
-  getRssi() {
-    if (this.isStale() || typeof this.rssi !== "number") return null;
-    return this.rssi;
   }
 
   getUnwrappedHeading() {
@@ -404,17 +395,15 @@ function updateHint(force = false) {
   const wsState = panSource === "websocket" ? panInput.getState() : "idle";
   const dataAge = panSource === "websocket" ? panInput.getDataAgeMs() : null;
   const heading = panSource === "websocket" ? panInput.getHeading() : null;
-  const rssi = panSource === "websocket" ? panInput.getRssi() : null;
   const dataLabel =
     dataAge === null ? "no data yet" : `${(dataAge / 1000).toFixed(1)}s ago`;
   const headingLabel =
     heading === null ? "--" : `${heading.toFixed(2)}°`;
-  const rssiLabel = rssi === null ? "--" : `${rssi} dBm`;
   const fpsLabel = fpsDisplay > 0 ? fpsDisplay.toFixed(1) : "--";
   const spawnCap = getDynamicSpawnLimits().maxLanterns;
   const bgLabel = bgTileLayer ? "ready" : bgLoadState;
   hintEl.textContent =
-    `FPS: ${fpsLabel} | Spawn cap: ${spawnCap} | BG: ${bgLabel} | Source: ${panSource} | WS: ${wsState} | Heading: ${headingLabel} | RSSI: ${rssiLabel} | Data: ${dataLabel} | Endpoint: ${WS_URL} | Registry: ${registryState} | W: source | F: fullscreen | D: debug`;
+    `FPS: ${fpsLabel} | Spawn cap: ${spawnCap} | BG: ${bgLabel} | Source: ${panSource} | WS: ${wsState} | Heading: ${headingLabel} | Data: ${dataLabel} | Endpoint: ${WS_URL} | Registry: ${registryState} | W: source | F: fullscreen | D: debug`;
 }
 
 class Scene {
