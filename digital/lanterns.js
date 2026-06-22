@@ -14,6 +14,7 @@ const CONFIG = {
 };
 
 const TARGET_FPS = 60;
+const SPAWN_THROTTLE_FPS = 30;
 
 const APP_SECRETS = window.APP_SECRETS || {};
 const REGISTRY_BASE_URL =
@@ -334,7 +335,9 @@ function updateFps() {
 function updateSpawnScale() {
   if (fpsDisplay <= 0) return;
 
-  const target = clampValue(fpsDisplay / TARGET_FPS, 0.2, 1);
+  const target = fpsDisplay >= SPAWN_THROTTLE_FPS
+    ? 1
+    : clampValue(fpsDisplay / SPAWN_THROTTLE_FPS, 0.2, 1);
   const rate = target < spawnScale ? 0.22 : 0.07;
   spawnScale = lerp(spawnScale, target, rate);
 }
