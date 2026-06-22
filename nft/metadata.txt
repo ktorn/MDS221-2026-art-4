@@ -1,0 +1,30 @@
+ARTWORK
+The Gathering of Lanterns
+
+CREATOR
+Wendy, Wingong, Hyde, Xian
+
+NFT PLATFORM
+Teia.art
+
+BLOCKCHAIN
+Tezos
+
+DATE
+June 2026
+
+TAGS
+interactive, installation, usj, mds221, p5js, generative, lanterns, kongming, teia
+
+DESCRIPTION
+This project blends traditional Kongming lantern blessings with interactive digital art. Through intuitive manipulation, viewers release floating, glowing lanterns within a tranquil, dark environment — a peaceful and therapeutic experience that establishes a gentle spiritual resonance between people and Eastern aesthetic imagery, and achieves an innovative digital inheritance of traditional Eastern blessing rituals.
+
+This is an interactive artwork. Click the canvas to focus, then use the keyboard:
+
+Left / Right arrow keys — pan horizontally across the tiled landscape
+Space — pause / resume the gentle automatic camera drift
+
+Default behaviour on load:
+Lanterns rise and glow immediately, drifting upward with soft side motion and parallax depth. The view slowly pans on its own across the dark landscape. No setup or external device is required.
+
+Created by Wendy, Wingong, Hyde, and Xian as part of MDS221 – Interactive Multimedia Installation, University of Saint Joseph (USJ), Macau.

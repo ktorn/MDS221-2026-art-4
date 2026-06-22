@@ -1,5 +1,6 @@
 agent/
 .DS_Store
 node_modules/
+nft.zip
 digital/secrets.js
 tangible/**/secrets.h
